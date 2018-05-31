@@ -21,7 +21,7 @@ MXNet中有三种进程类型，这些进程之间相互通信，完成模型的
 
 * Scheduler(调度器)：只有一个Scheduler。Scheduler的作用是配置集群。这包括等待每个节点启动以及节点正在监听哪个端口之类的消息。 然后Scheduler让所有进程知道集群中的其他节点的信息，以便它们可以相互通信。
 
-### K-V 存储
+### kvstore
 
 MXNet提供了key-value存储机制，这个机制是多设备训练中关键的一部分。一个或多个Server通过将参数存储为K-V的形式在单台机器或者多台机器上进行跨节点的参数交互。这种存储机制中的每个值都由key-value表示，其中网络中的每个参数数组被分配了一个key,并且value是这个参数数组的权重。Workes在一批计算处理之后进行梯度的推送，并且在新的计算批次开始之前拉取更新后的权重。我们也可以在更新每个权重时传入K-V存储的优化器。这个优化器像随机梯度下降一样定义了一个更新规则——本质上是旧的权重、梯度和一些参数来计算新的权重。
 
@@ -35,3 +35,100 @@ MXNet提供了key-value存储机制，这个机制是多设备训练中关键的
 > kv = mxnet.kvstore.create('dist_sync')
 
 有关KVStore的更多信息，请参阅[KVStore API](https://mxnet.incubator.apache.org/versions/master/api/python/kvstore/kvstore.html)。
+
+### Keys的分配
+
+每个server不一定存储所有的key或全部的参数数组。 参数分布在不同的server上。 哪个server存储特定的keys是随机决定的。 KVStore透明地处理不同服务器上的keys分配。 它确保当一个keys被拉取时，该请求被发送到的服务器具有对应value。 如果某个keys的值非常大，则可能会在不同的服务器上分片。 这意味着不同的服务器拥有不同部分的value。 并且，这个处理是透明的，所以workers不必做任何不同的事情。 这个分片的阈值可以用环境变量`MXNET_KVSTORE_BIGARRAY_BOUND`来控制。 有关更多详情，请参阅[环境变量](https://github.com/apache/incubator-mxnet/blob/24362d0ce5d2d099dd65abc0ccd666f7a131d8e0/docs/faq/distributed_training.md#environment-variables)。
+
+### 切分训练数据
+
+在数据并行模式下进行分布式训练时，我们希望每台机器都在不同部分的数据集上工作。
+
+对于单个worker的数据并行训练，我们可以使用`mxnet.gluon.utils.split_and_load`来切分数据迭代器(data iterator)提供的一批样本，然后将该批处理的每个部分加载到将处理它的设备上。
+
+在分布式训练的情况下，我们需要在开始时将数据集分成`n`个部分，以便每个worker获得不同的部分。然后，每个worker可以使用`split_and_load`再次将数据集的这部分划分到单个机器上的不同设备上。
+
+通常情况下，每个worker都是通过数据迭代器进行的数据拆分，通过传递切分的数量和切分部分的索引来迭代。 MXNet中支持此功能的一些迭代器是`mxnet.io.MNISTIterator`和`mxnet.io.ImageRecordIter`。如果你使用的是不同的迭代器，你可以看看上面的迭代器是如何实现此功能的。我们可以使用kvstore对象来获取当前worker的数量（kv.num_workers）和等级（kv.rank）。这些可以作为参数传递给迭代器。你可以看[example / gluon / image_classification.py](https://github.com/apache/incubator-mxnet/blob/master/example/gluon/image_classification.py)来查看一个示例用法。
+
+### 分布式训练的不同模式
+
+在kvstore创建包含dist字段的字符串时才启用分布式。
+
+通过使用不同类型的kvstore可以启用不同的分布式训练模式。
+
+* `dist_sync` : 在同步分布式训练中，所有worker在每批计算开始时都使用同一组同步模型参数。这意味着每次批处理后，服务器在更新模型参数之前都会等待从每个worker上接收gradients。这种同步需要付出代价，因为worker必须等到服务器完成接收过程再开始拉取参数。在这种模式下，如果有worker崩溃，那么它会使所有工人的进度停止。
+
+* `dist_async` : 在异步分布式训练中，server从一名worker处接收梯度之后，立即更新其存储，以用于响应任何未来的拉取。这意味着完成一批计算的工作人员可以从server中提取当前参数并开始下一批计算，即使其他工作人员尚未完成先前批的计算。这比`dist_sync`快，但可能需要更多的训练次数才能收敛。在异步模式下，需要传递优化器，因为在没有优化器的情况下，kvstore会用接收的权重替换存储的权重，这对于异步模式下的训练没有意义。权重的更新具有原子性，这意味着同一重量不会同时发生两次更新。但是，更新顺序无法保证。
+
+* `dist_sync_device`: 与dist_sync相同，当每个节点上使用多个GPU时使用，此模式在GPU上聚合梯度并更新权重，而`dist_sync`则在CPU内存上执行此类操作。此模式比dist_sync快，因为它可以减少GPU和CPU之间昂贵的通信，但会增加GPU上的内存使用量。
+
+* `dist_async_device` ：与`dist_sync_device`相似，但处于异步模式。
+
+### 梯度压缩
+
+当通信费用昂贵，并且计算时间与通信时间的比例较低时，通信可能成为瓶颈。 在这种情况下，可以使用梯度压缩来降低通信成本，从而加速训练。 有关更多详细信息，请参阅[梯度压缩](https://mxnet.incubator.apache.org/versions/master/faq/gradient_compression.html)。
+
+注意：对于小型模型，当计算成本远低于通信成本时，由于通信和同步的开销，分布式培训实际上可能比单台机器上的培训慢。
+
+## 如何开始分布式训练
+
+MXNet提供了一个脚本工具/ launch.py，以便于开展分布式训练工作。这支持各种类型的集群资源管理器，如`ssh`，`mpirun`，`yarn`和`sge`。 如果您已配置了其中一个集群，则可以跳过下一节设置群集。 如果您想使用上述未提及的类型，请直接跳到手动启动作业部分。
+
+### 配置集群
+
+使用[AWS CloudFormation template](https://github.com/awslabs/deeplearning-cfn)配置用于分布式深度学习的EC2实例集群的是一个简单的方法。 如果您不能使用上述内容，本节将帮助您手动设置一组实例，以使您可以使用`ssh`启动分布式训练作业。 让我们用一台机器作为集群的`master`，我们将通过它启动并监视所有机器上的分布式培训。
+
+如果集群中的计算机是AWS EC2等云计算平台的一部分，那么您的实例应该已经使用基于密钥的身份验证。 确保使用相同的密钥创建所有实例，例如使用`mxnet-key`并且所有实例位于同一个安全组中。 接下来，我们需要确保master能够通过`ssh`访问集群中其他所有机器。方法是将此密钥添加到[ssh-agent](https://en.wikipedia.org/wiki/Ssh-agent)并在登录时将其转发给master。这将使mxnet-key成为master上的默认密钥:
+
+```
+ssh-add .ssh/mxnet-key
+ssh -A user@MASTER_IP_ADDRESS
+```
+如果您的机器使用密码进行身份验证，请参阅[此处](https://help.ubuntu.com/community/SSH/OpenSSH/Keys)获取有关在机器之间设置无密码身份验证的说明。
+
+如果所有这些机器都具有共享的文件系统，以便他们可以访问培训脚本，则会更简便。 一种方法是使用Amazon Elastic File System来创建您的网络文件系统。 安装AWS Elastic File System时，以下命令中的选项是推荐的选项。
+
+```
+sudo mkdir efs && sudo mount -t nfs4 -o nfsvers=4.1,rsize=1048576,wsize=1048576,hard,timeo=600,retrans=2 NETWORK_FILE_SYSTEM_IP:/ efs
+```
+提示：您可能会发现将大型数据集存储在S3上有助于集群中所有机器的轻松访问。 请参阅[使用S3的数据进行训练](https://mxnet.incubator.apache.org/versions/master/faq/s3_integration.html)以获取更多信息。
+
+### 使用 Launch.py
+
+MXNet提供了一个脚本[tools/launch.py](https://github.com/apache/incubator-mxnet/blob/master/tools/launch.py)，以便使用`ssh`，`mpi`，`sge`或`yarn`在集群上启动分布式培训。 您可以通过克隆mxnet仓库来获取此脚本。
+```
+git clone --recursive https://github.com/apache/incubator-mxnet
+```
+
+#### Example
+
+让我们考虑使用[example/gluon/image_classification.py](https://github.com/apache/incubator-mxnet/blob/master/example/gluon/image_classification.py)在CIFAR10数据集上训练VGG11模型。
+```
+cd example/gluon/
+```
+
+在单台机器上，我们可以运行这个脚本，如下所示：
+
+```
+python image_classification.py --dataset cifar10 --model vgg11 --num-epochs 1
+```
+
+对于此示例的分布式培训，我们将执行以下操作：
+如果包含脚本image_classification.py的mxnet目录可供集群中的所有计算机访问（例如，如果它们位于网络文件系统上），则可以运行：
+```
+../../tools/launch.py -n 3 -H hosts --launcher ssh python image_classification.py --dataset cifar10 --model vgg11 --num-epochs 1 --kvstore dist_sync
+```
+
+如果包含脚本的目录不能从集群中的其他机器访问，那么我们可以将当前目录同步到所有机器。
+
+```
+../../tools/launch.py -n 3 -H hosts --launcher ssh --sync-dst-dir /tmp/mxnet_job/ python image_classification.py --dataset cifar10 --model vgg11 --num-epochs 1 --kvstore dist_sync
+```
+> 如果您没有准备好集群但是仍想尝试此操作，请传递选项`--launcher local`而不是`ssh`
+
+#### 选项
+在这里，launch.py用于提交分布式训练作业。它有以下选择：
+* `-n` 表示要启动的worker节点的数量。
+* `-s` 表示要启动的server节点的数量。 如果没有指定，则认为它等于worker节点的数量。该脚本尝试循环访问hosts文件以启动server和worker。 例如，如果主机文件中有5个主机，并且您将n设置为3（并且不设置s）。 该脚本将启动总共3个server进程，前三台主机分别启动一个worker进程，总共3个worker进程.启动server进程的分别为第四台，第五台和第一台主机。如果主机文件中恰好有n个工作节点，它将在每台主机上启动一个服务器进程和一个工作进程。
+* `--launcher` 表示通信模式。选项有：
+  * `ssh`  如果机器可以通过ssh进行通信而无需密码。 这是默认启动模式。
