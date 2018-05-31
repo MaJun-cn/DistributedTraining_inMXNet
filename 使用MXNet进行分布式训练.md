@@ -21,6 +21,17 @@ MXNet中有三种进程类型，这些进程之间相互通信，完成模型的
 
 * Scheduler(调度器)：只有一个Scheduler。Scheduler的作用是配置集群。这包括等待每个节点启动以及节点正在监听哪个端口之类的消息。 然后Scheduler让所有进程知道集群中的其他节点的信息，以便它们可以相互通信。
 
-``` python
-import mxnet
-```
+### K-V 存储
+
+MXNet提供了key-value存储机制，这个机制是多设备训练中关键的一部分。一个或多个Server通过将参数存储为K-V的形式在单台机器或者多台机器上进行跨节点的参数交互。这种存储机制中的每个值都由key-value表示，其中网络中的每个参数数组被分配了一个key,并且value是这个参数数组的权重。Workes在一批计算处理之后进行梯度的推送，并且在新的计算批次开始之前拉取更新后的权重。我们也可以在更新每个权重时传入K-V存储的优化器。这个优化器像随机梯度下降一样定义了一个更新规则——本质上是旧的权重、梯度和一些参数来计算新的权重。
+
+如果你使用一个Gluon Trainer对象或者是模型的API,它将在内部使用kvstore对象来聚合梯度，这些梯度来自同一台机器上或者不同机器上多个设备上。
+
+尽管无论是否使用多台机器进行训练，API都保持不变，但kvstore服务器的概念仅存在于分布式训练期间。在分布式情况下，每次推送和拉取都涉及与kvstore服务器的通信。当一台机器上有多个设备时，这些设备训练的梯度首先会聚合在机器上，然后发送再到服务器。
+请注意，我们需要构建标志`USE_DIST_KVSTORE = 1`之后再编译MXNet才能使用分布式训练机制。
+
+通过调用`mxnet.kvstore.create`函数使用包含dist字符串的字符串参数来启用KVStore的分布式模式，如下所示：
+
+> kv = mxnet.kvstore.create('dist_sync')
+
+有关KVStore的更多信息，请参阅[KVStore API](https://mxnet.incubator.apache.org/versions/master/api/python/kvstore/kvstore.html)。
