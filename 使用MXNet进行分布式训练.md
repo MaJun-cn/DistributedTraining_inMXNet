@@ -208,8 +208,3 @@ DMLC_ROLE=worker DMLC_PS_ROOT_URI=127.0.0.1 DMLC_PS_ROOT_PORT=9092 DMLC_NUM_SERV
 * `PS_RESEND` 重传不可靠的网络 数值类型：boolean (0-false或1-true）；默认值：0（false）;是否启用重传消息
 
 * `PS_RESEND_TIMEOUT` 收到ACK的超时 数值类型：Integer (in milliseconds)；默认值：1000；如果在`PS_RESEND_TIMEOUT`毫秒内未收到ACK，则该消息将被重发。
-
-
-* `PS_RESEND`
-
-* `PS_RESEND_TIMEOUT`
