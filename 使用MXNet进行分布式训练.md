@@ -113,7 +113,7 @@ cd example/gluon/
 python image_classification.py --dataset cifar10 --model vgg11 --num-epochs 1
 ```
 
-对于此示例的分布式培训，我们将执行以下操作：
+对于此示例的分布式训练，我们将执行以下操作：
 如果包含脚本image_classification.py的mxnet目录可供集群中的所有计算机访问（例如，如果它们位于网络文件系统上），则可以运行：
 ```
 ../../tools/launch.py -n 3 -H hosts --launcher ssh python image_classification.py --dataset cifar10 --model vgg11 --num-epochs 1 --kvstore dist_sync
@@ -148,7 +148,7 @@ python image_classification.py --dataset cifar10 --model vgg11 --num-epochs 1
 172.30.1.174
 ```
 
-* `--sync-dst-dir` 将所有主机上的一个目录的路径指向当前将被同步的工作目录。此选项仅支持`ssh`启动模式。 当工作目录不能被群集中的所有机器访问时，这是必需的。设置此选项可在作业启动之前使用rsync同步当前目录。如果您尚未在系统范围内安装MXNet，则必须在运行launch.py之前将文件夹`python/mxnet`和文件`lib/libmxnet.so`复制到当前目录中。 例如，如果你在`example/gluon`中，你可以用`cp -r ../../python/mxnet../../lib/libmxnet.so`来做到这一点。如果你的`lib`文件夹中包含`libmxnet.so`，这将有效。 所以，就像你使用make的情况一样。 如果你使用CMake，这个文件将在你的`build`目录中。
+* `--sync-dst-dir` 将所有主机上的一个目录的路径指向当前将被同步的工作目录。此选项仅支持`ssh`启动模式。 当工作目录不能被群集中的所有机器访问时，这是必需的。设置此选项可在作业启动之前使用rsync同步当前目录。如果您尚未在系统范围内安装MXNet，则必须在运行launch.py之前将文件夹`python/mxnet`和文件`lib/libmxnet.so`复制到当前目录中。 例如，如果你在`example/gluon`中，你可以用`cp -r ../../python/mxnet ../../lib/libmxnet.so`来做到这一点。如果你的`lib`文件夹中包含`libmxnet.so`，这将有效。 所以，就像你使用make的情况一样。 如果你使用CMake，这个文件将在你的`build`目录中。
 
 * `python image_classification.py --dataset cifar10 --model vgg11 --num-epochs 1 --kvstore dist_sync`是每台机器上的训练工作的命令。请注意使用脚本中的`dist_sync`设置kvstore。
 
