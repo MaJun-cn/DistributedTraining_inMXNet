@@ -128,7 +128,88 @@ python image_classification.py --dataset cifar10 --model vgg11 --num-epochs 1
 
 #### 选项
 在这里，launch.py用于提交分布式训练作业。它有以下选择：
+
 * `-n` 表示要启动的worker节点的数量。
+
 * `-s` 表示要启动的server节点的数量。 如果没有指定，则认为它等于worker节点的数量。该脚本尝试循环访问hosts文件以启动server和worker。 例如，如果主机文件中有5个主机，并且您将n设置为3（并且不设置s）。 该脚本将启动总共3个server进程，前三台主机分别启动一个worker进程，总共3个worker进程.启动server进程的分别为第四台，第五台和第一台主机。如果主机文件中恰好有n个工作节点，它将在每台主机上启动一个服务器进程和一个工作进程。
+
 * `--launcher` 表示通信模式。选项有：
-  * `ssh`  如果机器可以通过ssh进行通信而无需密码。 这是默认启动模式。
+  * `ssh` 如果机器可以通过ssh进行通信而无需密码。 这是默认启动模式。
+  * `mpi` 使用Open MPI时开启
+  * `sge` 适用于Sun Grid引擎
+  * `yarn` 适用于Apache yarn
+  * `local` 用于在同一本地计算机上启动所有进程。 这可以用于调试。
+
+
+* `-H` 需要主机文件的路径,该文件包含集群中机器的IP。这些机器应能够在不使用密码的情况下相互通信。 此文件仅适用于启动程序模式为ssh或mpi时。 hosts文件内容的例子如下所示：
+```
+172.30.0.172
+172.31.0.173
+172.30.1.174
+```
+
+* `--sync-dst-dir` 将所有主机上的一个目录的路径指向当前将被同步的工作目录。此选项仅支持`ssh`启动模式。 当工作目录不能被群集中的所有机器访问时，这是必需的。设置此选项可在作业启动之前使用rsync同步当前目录。如果您尚未在系统范围内安装MXNet，则必须在运行launch.py之前将文件夹`python/mxnet`和文件`lib/libmxnet.so`复制到当前目录中。 例如，如果你在`example/gluon`中，你可以用`cp -r ../../python/mxnet../../lib/libmxnet.so`来做到这一点。如果你的`lib`文件夹中包含`libmxnet.so`，这将有效。 所以，就像你使用make的情况一样。 如果你使用CMake，这个文件将在你的`build`目录中。
+
+* `python image_classification.py --dataset cifar10 --model vgg11 --num-epochs 1 --kvstore dist_sync`是每台机器上的训练工作的命令。请注意使用脚本中的`dist_sync`设置kvstore。
+
+#### 终止工作
+
+如果训练作业因错误而崩溃，或者如果我们试图在训练运行时终止启动脚本，则所有机器上的作业可能没有终止。 在这种情况下，我们需要手动终止它们。 如果我们使用的是ssh启动器，可以通过运行以下命令来完成，其中hosts是hostfile的路径。
+```
+while read -u 10 host; do ssh -o "StrictHostKeyChecking no" $host "pkill -f python" ; done 10<hosts
+```
+
+### 手动启动工作
+
+如果由于某种原因，您不想使用上面的脚本启动分布式培训，那么本节将有所帮助。 MXNet使用环境变量将不同的角色分配给不同的进程，并让不同的进程查找调度程序。 需要按照以下步骤正确设置环境变量才能开始培训：
+
+* `DMLC_ROLE` ：指定进程的角色。 这可以是server、worker或scheduler。 请注意，应该只有一个scheduler。 当`DMLC_ROLE`设置为server或scheduler后，这些进程在导入mxnet时启动。
+
+* `DMLC_PS_ROOT_URI` ：指定scheduler的IP
+
+* `DMLC_PS_ROOT_PORT` ：指定scheduler侦听的端口
+
+* `DMLC_NUM_SERVER` ：指定群集中有多少个server节点
+
+* `DMLC_NUM_WORKER` ：指定群集中有多少个worker节点
+
+以下是在Linux或Mac上在单机启动所有作业的示例。 请注意，在同一台机器上启动所有作业不是一个好主意。 这只是为了使用法清楚展示。
+
+```
+export COMMAND=python example/gluon/mnist.py --dataset cifar10 --model vgg11 --num-epochs 1 --kv-store dist_async
+DMLC_ROLE=server DMLC_PS_ROOT_URI=127.0.0.1 DMLC_PS_ROOT_PORT=9092 DMLC_NUM_SERVER=2 DMLC_NUM_WORKER=2 COMMAND &
+DMLC_ROLE=server DMLC_PS_ROOT_URI=127.0.0.1 DMLC_PS_ROOT_PORT=9092 DMLC_NUM_SERVER=2 DMLC_NUM_WORKER=2 COMMAND &
+DMLC_ROLE=scheduler DMLC_PS_ROOT_URI=127.0.0.1 DMLC_PS_ROOT_PORT=9092 DMLC_NUM_SERVER=2 DMLC_NUM_WORKER=2 COMMAND &
+DMLC_ROLE=worker DMLC_PS_ROOT_URI=127.0.0.1 DMLC_PS_ROOT_PORT=9092 DMLC_NUM_SERVER=2 DMLC_NUM_WORKER=2 COMMAND &
+DMLC_ROLE=worker DMLC_PS_ROOT_URI=127.0.0.1 DMLC_PS_ROOT_PORT=9092 DMLC_NUM_SERVER=2 DMLC_NUM_WORKER=2 COMMAND
+```
+有关scheduler如何设置群集的深入讨论，请参阅[此处](https://blog.kovalevskyi.com/mxnet-distributed-training-explained-in-depth-part-1-b90c84bda725)。
+
+## 环境变量
+
+### 关于调整性能
+
+* `MXNET_KVSTORE_REDUCTION_NTHREADS` 数值类型：Integer； 默认值：4 (用于在单台计算机上汇总大型数组的CPU线程数);此函数也将用于`dist_sync` kvstore，以在单台计算机上汇总来自不同环境下的数组。使用`dist_sync_device`kvstore汇总数组也不会受到GPU上的影响。
+
+* `MXNET_KVSTORE_BIGARRAY_BOUND` 数值类型：Integer；默认值：1000000 (大数组的最小规模)；当数组大小大于此阈值时，`MXNET_KVSTORE_REDUCTION_NTHREADS`线程用于减少数组规模。该参数也用作kvstore中的负载均衡器。它控制何时将单个权重拆分给所有server。如果单个权重矩阵的规模小于这个界限，那么它将被发送到一个随机挑选的server;否则，它被拆分到所有的服务器。
+
+* `MXNET_ENABLE_GPU_P2P` GPU对等(P2P)通信 数值类型：boolean (0-false或1-true）；默认值：1（true）；如果为真，MXNet会尝试使用GPU对等通信（如果设备上可用）。 这仅在kvstore中包含类型设备时使用。
+
+### 通信
+
+* `DMLC_INTERFACE` 使用特定网络接口 数值类型：端口的名称 例如：`eth0` MXNet通常选择第一个可用网络接口。 但对于具有多个接口的机器，我们可以使用此环境变量指定要使用哪个网络接口进行数据通信。
+
+* `PS_VERBOSE`  记录通信 数值类型：1或2；默认值：（空）
+  * `PS_VERBOSE=1` 记录连接信息，如所有节点的IP和端口
+  * `PS_VERBOSE=2` 记录所有数据通信信息
+
+当网络不可靠时，从一个节点发送到另一个节点的消息可能会丢失。当关键的消息没有成功传递时，训练过程可能会挂起。 在这种情况下，可以为每个消息发送额外的ACK以跟踪其传送。这可以通过设置`PS_RESEND`和`PS_RESEND_TIMEOUT`来完成
+
+* `PS_RESEND` 重传不可靠的网络 数值类型：boolean (0-false或1-true）；默认值：0（false）;是否启用重传消息
+
+* `PS_RESEND_TIMEOUT` 收到ACK的超时 数值类型：Integer (in milliseconds)；默认值：1000；如果在`PS_RESEND_TIMEOUT`毫秒内未收到ACK，则该消息将被重发。
+
+
+* `PS_RESEND`
+
+* `PS_RESEND_TIMEOUT`
